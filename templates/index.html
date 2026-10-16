@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sign Language Recognition</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 700px; margin: 20px auto; padding: 0 12px; }
+    video { width: 100%; max-width: 640px; border-radius: 8px; background: #000; transform: scaleX(-1); }
+    select, button { font-size: 16px; padding: 8px 12px; margin: 6px 6px 6px 0; }
+    #result { font-size: 32px; font-weight: bold; margin: 12px 0; min-height: 40px; }
+    #sentence { width: 100%; font-size: 20px; padding: 8px; box-sizing: border-box; }
+    #status { color: #555; }
+  </style>
+</head>
+<body>
+  <h2>Sign Language Recognition</h2>
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas" width="320" height="240" style="display:none"></canvas>
+
+  <div>
+    <button id="camOnBtn">Start camera</button>
+    <button id="camOffBtn">Stop camera</button>
+  </div>
+
+  <div>
+    <select id="category"></select>
+    <button id="signBtn">Sign now (3 sec)</button>
+  </div>
+  <div id="status">Choose a category, click the button, then sign.</div>
+  <div id="result"></div>
+
+  <input id="sentence" placeholder="Your sentence appears here" readonly>
+  <div>
+    <button id="speakBtn">Speak</button>
+    <button id="backBtn">Backspace</button>
+    <button id="clearBtn">Clear</button>
+  </div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+const sentenceEl = document.getElementById('sentence');
+const signBtn = document.getElementById('signBtn');
+const THRESHOLD = 0.6;
+let words = [];
+let stream = null;
+
+async function startCamera() {
+  if (stream) return;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    statusEl.textContent = 'Camera on. Choose a category and click Sign now.';
+  } catch (e) {
+    statusEl.textContent = 'Camera not available. Allow camera access.';
+  }
+}
+
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  video.srcObject = null;
+  statusEl.textContent = 'Camera stopped.';
+}
+
+document.getElementById('camOnBtn').onclick = startCamera;
+document.getElementById('camOffBtn').onclick = stopCamera;
+window.addEventListener('beforeunload', stopCamera);
+startCamera();
+
+fetch('/categories').then(r => r.json()).then(list => {
+  const sel = document.getElementById('category');
+  list.forEach(c => sel.add(new Option(c, c)));
+});
+
+signBtn.onclick = async () => {
+  if (!stream) { statusEl.textContent = 'Turn the camera on first.'; return; }
+  signBtn.disabled = true;
+  resultEl.textContent = '';
+  const frames = [];
+  statusEl.textContent = 'Get ready... 1 second';
+  await new Promise(r => setTimeout(r, 1000));
+  statusEl.textContent = 'SIGN NOW!';
+
+  await new Promise(resolve => {
+    const timer = setInterval(() => {
+      ctx.drawImage(video, 0, 0, 320, 240);   // not mirrored, same as training
+      frames.push(canvas.toDataURL('image/jpeg', 0.7));
+      if (frames.length >= 30) { clearInterval(timer); resolve(); }
+    }, 100);
+  });
+
+  statusEl.textContent = 'Thinking...';
+  try {
+    const res = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: document.getElementById('category').value, frames })
+    });
+    const d = await res.json();
+    if (!d.word) {
+      statusEl.textContent = d.message;
+    } else if (d.confidence < THRESHOLD) {
+      resultEl.textContent = 'Not sure (' + d.word + '? ' + Math.round(d.confidence * 100) + '%)';
+      statusEl.textContent = 'Try again.';
+    } else {
+      resultEl.textContent = d.word + '  (' + Math.round(d.confidence * 100) + '%)';
+      words.push(d.word);
+      sentenceEl.value = words.join(' ');
+      statusEl.textContent = 'Done. Sign the next word.';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error talking to the server.';
+  }
+  signBtn.disabled = false;
+};
+
+document.getElementById('speakBtn').onclick = () =>
+  speechSynthesis.speak(new SpeechSynthesisUtterance(sentenceEl.value));
+document.getElementById('backBtn').onclick = () => { words.pop(); sentenceEl.value = words.join(' '); };
+document.getElementById('clearBtn').onclick = () => { words = []; sentenceEl.value = ''; resultEl.textContent = ''; };
+</script>
+</body>
+</html>
